@@ -1,8 +1,11 @@
 package com.paisachat.data
 
 data class LocalMessage(
-    val chatId: String,
-    val senderId: String,
-    val receiverId: String,
-    val messageText: String
+    val chatId: String = "",
+    val senderId: String = "",
+    val receiverId: String = "",
+    val messageText: String = "",
+    val id: String = "",
+    val timestamp: Long = 0L,
+    val imageUrl: String = ""
 )

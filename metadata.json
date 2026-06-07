@@ -1,5 +1,5 @@
 {
-  "name": "Glassmorphic Chat",
+  "name": "Air Chat",
   "description": "A high-end 3D glassmorphic messaging interface designed with neomorphic layering, responsive spring animations, and edge-to-edge screens.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

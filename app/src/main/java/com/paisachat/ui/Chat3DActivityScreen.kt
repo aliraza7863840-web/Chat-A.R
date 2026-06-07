@@ -3,9 +3,11 @@ package com.paisachat.ui
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -32,6 +34,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -62,6 +65,27 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.StrokeCap
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.database.ValueEventListener
+import com.google.firebase.database.DataSnapshot
+import com.google.firebase.database.DatabaseError
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.platform.LocalContext
+import android.widget.Toast
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.google.firebase.storage.FirebaseStorage
+import android.speech.RecognizerIntent
+import android.content.Intent
+import java.util.Locale
+import android.app.Activity
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 // ── 3D CYBERPUNK SPACE SLATE COLOR DESIGN SYSTEM (ELEGANT DARK) ──
 val Deep3DBackground = Color(0xFF0A0C14)
@@ -103,6 +127,7 @@ fun Chat3DActivityScreen(
 ) {
     var currentScreen by remember { mutableStateOf<ChatScreen>(ChatScreen.Splash) }
     var userEmail by remember { mutableStateOf("") }
+    var activeUserId by remember { mutableStateOf(currentUserId) }
     
     // Bottom pencil contacts sheet and profile tray states
     var isContactPickerOpen by remember { mutableStateOf(false) }
@@ -169,31 +194,66 @@ fun Chat3DActivityScreen(
                 if (initialState is ChatScreen.Splash || targetState is ChatScreen.Splash) {
                     fadeIn(animationSpec = tween(600)) togetherWith fadeOut(animationSpec = tween(400))
                 } else {
+                    val slideDirection = if (initialState is ChatScreen.ChatRoom || targetState is ChatScreen.Dashboard) -1 else 1
                     slideInHorizontally(
-                        initialOffsetX = { fullWidth -> if (initialState is ChatScreen.ChatRoom || targetState is ChatScreen.Dashboard) -fullWidth else fullWidth },
-                        animationSpec = spring(stiffness = Spring.StiffnessMediumLow, dampingRatio = Spring.DampingRatioMediumBouncy)
-                    ) + fadeIn() togetherWith slideOutHorizontally(
-                        targetOffsetX = { fullWidth -> if (initialState is ChatScreen.ChatRoom || targetState is ChatScreen.Dashboard) fullWidth else -fullWidth },
-                        animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                    ) + fadeOut()
+                        initialOffsetX = { fullWidth -> slideDirection * (fullWidth / 2) },
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                            stiffness = Spring.StiffnessMediumLow
+                        )
+                    ) + fadeIn(
+                        animationSpec = spring(
+                            stiffness = Spring.StiffnessMediumLow
+                        )
+                    ) + scaleIn(
+                        initialScale = 0.94f,
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                            stiffness = Spring.StiffnessMediumLow
+                        )
+                    ) togetherWith slideOutHorizontally(
+                        targetOffsetX = { fullWidth -> -slideDirection * (fullWidth / 2) },
+                        animationSpec = spring(
+                            stiffness = Spring.StiffnessMediumLow
+                        )
+                    ) + fadeOut(
+                        animationSpec = spring(
+                            stiffness = Spring.StiffnessMediumLow
+                        )
+                    ) + scaleOut(
+                        targetScale = 0.94f,
+                        animationSpec = spring(
+                            stiffness = Spring.StiffnessMediumLow
+                        )
+                    )
                 }
             },
             label = "MasterNavigation"
         ) { screen ->
             when (screen) {
                 is ChatScreen.Splash -> {
-                    SplashScreen(onTimeout = { currentScreen = ChatScreen.Login })
+                    SplashScreen(onTimeout = { email ->
+                        if (email != null) {
+                            userEmail = email
+                            activeUserId = try { FirebaseAuth.getInstance().currentUser?.uid ?: email.replace(".", "_") } catch (e: Exception) { email.replace(".", "_") }
+                            currentScreen = ChatScreen.Dashboard
+                        } else {
+                            currentScreen = ChatScreen.Login
+                        }
+                    })
                 }
                 is ChatScreen.Login -> {
                     LoginScreen(
                         onLoginSuccess = { email ->
                             userEmail = email
+                            activeUserId = try { FirebaseAuth.getInstance().currentUser?.uid ?: email.replace(".", "_") } catch (e: Exception) { email.replace(".", "_") }
                             currentScreen = ChatScreen.Dashboard
                         }
                     )
                 }
                 is ChatScreen.Dashboard -> {
                     DashboardScreen(
+                        currentUserId = activeUserId,
                         contacts = contactsList,
                         onContactClicked = { contact ->
                             contactsList = contactsList.map {
@@ -226,22 +286,41 @@ fun Chat3DActivityScreen(
                     ChatRoomScreen(
                         contact = activeContact,
                         messagesList = activeMessages,
-                        currentUserId = currentUserId,
+                        currentUserId = activeUserId,
                         onBackPressed = { currentScreen = ChatScreen.Dashboard },
-                        onSendMessage = { text ->
+                        onSendMessage = { text, imageUrl ->
                             val newMessage = LocalMessage(
+                                id = java.util.UUID.randomUUID().toString(),
                                 chatId = activeContact.id,
-                                senderId = currentUserId,
+                                senderId = activeUserId,
                                 receiverId = "other",
-                                messageText = text
+                                messageText = text,
+                                timestamp = System.currentTimeMillis(),
+                                imageUrl = imageUrl
                             )
-                            val updatedHistory = activeMessages + newMessage
-                            chatHistories = chatHistories.toMutableMap().apply {
-                                put(activeContact.id, updatedHistory)
+                            
+                            // 1. Try to send via Firebase Realtime Database
+                            try {
+                                val database = FirebaseDatabase.getInstance("https://my-chat-5a268-default-rtdb.firebaseio.com/")
+                                val messagesRef = database.getReference("chats").child(activeContact.id).child("messages")
+                                val newMsgRef = messagesRef.push()
+                                val msgId = newMsgRef.key ?: newMessage.id
+                                val finalMessage = newMessage.copy(id = msgId)
+                                newMsgRef.setValue(finalMessage)
+                            } catch (e: Exception) {
+                                e.printStackTrace()
                             }
+                            
+                            // 2. Local reactive history append to support flawless sandbox preview
+                            chatHistories = chatHistories.toMutableMap().apply {
+                                val currentList = this[activeContact.id] ?: emptyList()
+                                this[activeContact.id] = (currentList + newMessage).distinctBy { it.id }
+                            }
+                            
+                            val displayMsg = if (imageUrl.isNotEmpty() && text.isEmpty()) "[Image]" else text
                             contactsList = contactsList.map {
                                 if (it.id == activeContact.id) {
-                                    it.copy(lastMessage = text, lastMessageTime = "Just now")
+                                    it.copy(lastMessage = displayMsg, lastMessageTime = "Just now")
                                 } else it
                             }
                         }
@@ -255,17 +334,37 @@ fun Chat3DActivityScreen(
             visible = isProfileTrayOpen && currentScreen is ChatScreen.Dashboard,
             enter = slideInHorizontally(
                 initialOffsetX = { -it },
-                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium)
-            ) + fadeIn(),
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioLowBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            ) + fadeIn(
+                animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
+            ) + scaleIn(
+                initialScale = 0.95f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioLowBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            ),
             exit = slideOutHorizontally(
                 targetOffsetX = { -it },
                 animationSpec = spring(stiffness = Spring.StiffnessMedium)
-            ) + fadeOut()
+            ) + fadeOut() + scaleOut(
+                targetScale = 0.95f,
+                animationSpec = spring(stiffness = Spring.StiffnessMedium)
+            )
         ) {
             ProfileSettingsTray(
                 userEmail = userEmail,
+                activeUserId = activeUserId,
                 onDismiss = { isProfileTrayOpen = false },
                 onLogout = {
+                    try {
+                        FirebaseAuth.getInstance().signOut()
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
                     isProfileTrayOpen = false
                     userEmail = ""
                     contactsList = emptyList() // Clear states
@@ -501,7 +600,7 @@ fun RefractedThreeDLogo(modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun SplashScreen(onTimeout: () -> Unit) {
+fun SplashScreen(onTimeout: (String?) -> Unit) {
     var startAnimations by remember { mutableStateOf(false) }
 
     val scale by animateFloatAsState(
@@ -515,7 +614,12 @@ fun SplashScreen(onTimeout: () -> Unit) {
     LaunchedEffect(Unit) {
         startAnimations = true
         loadingProgress.animateTo(1f, animationSpec = tween(2300, easing = EaseInOutCubic))
-        onTimeout()
+        val currentUserEmail = try {
+            FirebaseAuth.getInstance().currentUser?.email
+        } catch (e: Exception) {
+            null
+        }
+        onTimeout(currentUserEmail)
     }
 
     Box(
@@ -526,14 +630,18 @@ fun SplashScreen(onTimeout: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            RefractedThreeDLogo(
-                modifier = Modifier.scale(scale)
+            Image(
+                painter = painterResource(id = R.drawable.img_app_logo_1780652305998),
+                contentDescription = "AR CHAT logo",
+                modifier = Modifier
+                    .size(160.dp)
+                    .scale(scale)
             )
 
             Spacer(modifier = Modifier.height(30.dp))
 
             Text(
-                text = "COSMIC GLASS",
+                text = "AR CHAT",
                 color = TextIceWhite,
                 fontSize = 26.sp,
                 fontWeight = FontWeight.ExtraBold,
@@ -544,7 +652,7 @@ fun SplashScreen(onTimeout: () -> Unit) {
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = "INITIALIZING TRANSCEIVER...",
+                text = "INITIALIZING SECURE TERMINAL...",
                 color = NeonActiveGreen.copy(alpha = 0.8f),
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
@@ -572,38 +680,52 @@ fun SplashScreen(onTimeout: () -> Unit) {
 }
 
 // ────────────────────────────────────────────────────────
-// 2. SECURE USER AUTHENTICATION & TIMER
+// 2. SECURE USER AUTHENTICATION (EMAIL + PASSWORD)
 // ────────────────────────────────────────────────────────
 @Composable
-fun LoginScreen(onLoginSuccess: (String) -> Unit) {
+fun LoginScreen(
+    onLoginSuccess: (String) -> Unit,
+    viewModel: AuthViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+) {
+    var mobileNumber by rememberSaveable { mutableStateOf("") }
     var emailAddress by rememberSaveable { mutableStateOf("") }
+    var password by rememberSaveable { mutableStateOf("") }
+    var isSignUpMode by rememberSaveable { mutableStateOf(false) }
+    var passwordVisible by rememberSaveable { mutableStateOf(false) }
     
-    // Create dedicated state array for the 4 OTP characters
-    val otpStates = remember {
-        List(4) {
-            mutableStateOf(TextFieldValue(""))
-        }
-    }
-    
-    val otpCode by remember {
-        derivedStateOf {
-            otpStates.joinToString("") { it.value.text }
-        }
-    }
-    
-    var isOtpSent by rememberSaveable { mutableStateOf(false) }
-    
+    var isMobileFocused by remember { mutableStateOf(false) }
     var isEmailFocused by remember { mutableStateOf(false) }
-    var isProceeding by remember { mutableStateOf(false) }
-    var firebaseStatusText by remember { mutableStateOf("") }
+    var isPasswordFocused by remember { mutableStateOf(false) }
+    
+    val isProceeding by viewModel.isProceeding.collectAsState()
+    val firebaseStatusText by viewModel.firebaseStatusText.collectAsState()
+    val isErrorState by viewModel.isErrorState.collectAsState()
 
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
 
-    // Strict email syntax validation (must contain '@' and ending with valid domains like '.com')
+    LaunchedEffect(isSignUpMode) {
+        viewModel.resetStatus()
+    }
+
+    // Validation
+    val isValidMobile = remember(mobileNumber) {
+        val trimmed = mobileNumber.trim()
+        trimmed.isNotEmpty() && trimmed.length >= 8
+    }
     val isValidEmail = remember(emailAddress) {
         val trimmed = emailAddress.trim()
         trimmed.contains("@") && trimmed.endsWith(".com") && trimmed.length >= 6
+    }
+    val isValidPassword = remember(password) {
+        password.length >= 6
+    }
+    
+    val isFormValid = if (isSignUpMode) {
+        isValidMobile && isValidEmail && isValidPassword
+    } else {
+        isValidMobile && isValidPassword
     }
 
     Box(
@@ -620,296 +742,361 @@ fun LoginScreen(onLoginSuccess: (String) -> Unit) {
                 .padding(horizontal = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // Elegant Photo Logo with Glassmorphic Border
             Box(
                 modifier = Modifier
-                    .size(64.dp)
-                    .shadow(12.dp, CircleShape)
+                    .size(100.dp)
+                    .shadow(16.dp, CircleShape)
                     .background(GlassSurfaceCore, CircleShape)
-                    .border(1.2.dp, if (isValidEmail) NeonActiveGreen else GlassBorderHighlight, CircleShape),
+                    .border(
+                        1.5.dp, 
+                        if (isFormValid) NeonActiveGreen else GlassBorderHighlight, 
+                        CircleShape
+                    ),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = Icons.Default.Lock,
-                    contentDescription = "Gateway",
-                    tint = if (isValidEmail) NeonActiveGreen else NeonCyanGlow,
-                    modifier = Modifier.size(24.dp)
+                Image(
+                    painter = painterResource(id = R.drawable.img_app_logo_1780652305998),
+                    contentDescription = "AR CHAT Logo",
+                    modifier = Modifier
+                        .size(80.dp)
+                        .clip(CircleShape)
                 )
             }
 
             Spacer(modifier = Modifier.height(20.dp))
 
             Text(
-                text = "SECURE TRANSCEIVER",
+                text = "AR CHAT",
                 color = TextIceWhite,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Black,
-                letterSpacing = 1.sp
+                fontSize = 26.sp,
+                fontWeight = FontWeight.ExtraBold,
+                letterSpacing = 4.sp
             )
 
             Spacer(modifier = Modifier.height(6.dp))
 
             Text(
-                text = if (!isOtpSent)
-                    "Provide your verified Gmail terminal address to initialize secure tunnel"
+                text = if (isSignUpMode)
+                    "Provision a new 3D holographic node inside the encrypted network"
                 else
-                    "Decrypt terminal link with the dispatched security signature",
+                    "Establish cryptographic link to sign in to your node terminal",
                 color = TextMutedBlue,
-                fontSize = 13.sp,
+                fontSize = 12.sp,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.padding(horizontal = 16.dp)
             )
 
-            Spacer(modifier = Modifier.height(30.dp))
+            Spacer(modifier = Modifier.height(24.dp))
 
-            AnimatedContent(
-                targetState = isOtpSent,
-                transitionSpec = {
-                    slideInHorizontally { it } + fadeIn() togetherWith slideOutHorizontally { -it } + fadeOut()
-                },
-                label = "FormFlip"
-            ) { otpSent ->
-                if (!otpSent) {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "GMAIL OPERATOR NODE",
-                                color = if (isValidEmail) NeonActiveGreen else NeonCyanGlow,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 1.sp
-                            )
-                            if (emailAddress.isNotEmpty() && !isValidEmail) {
-                                Text(
-                                    text = "Requires valid '@' and '.com'",
-                                    color = Color.Red.copy(alpha = 0.8f),
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                        }
+            // MAIN LOGIN & SIGNUP FIELDS
+            Column(modifier = Modifier.fillMaxWidth()) {
+                
+                // 1. MOBILE NUMBER INPUT (Both modes)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (isSignUpMode) "SECURE MOBILE NUMBER" else "REGISTERED MOBILE NUMBER",
+                        color = if (isValidMobile) NeonActiveGreen else NeonCyanGlow,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    )
+                    if (mobileNumber.isNotEmpty() && !isValidMobile) {
+                        Text(
+                            text = "Must be >= 8 digits",
+                            color = Color.Red.copy(alpha = 0.8f),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
-                        val focusScale by animateFloatAsState(if (isEmailFocused) 1.02f else 1f, spring(dampingRatio = Spring.DampingRatioHighBouncy))
-                        val shadowDp by animateDpAsState(if (isEmailFocused) 12.dp else 4.dp)
+                val mobileFocusScale by animateFloatAsState(
+                    if (isMobileFocused) 1.03f else 1f, 
+                    spring(dampingRatio = Spring.DampingRatioHighBouncy)
+                )
+                val mobileShadowDp by animateDpAsState(if (isMobileFocused) 12.dp else 4.dp)
 
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(54.dp)
+                        .scale(mobileFocusScale)
+                        .shadow(mobileShadowDp, RoundedCornerShape(16.dp))
+                        .background(GlassSurfaceCore, RoundedCornerShape(16.dp))
+                        .border(
+                            width = if (isMobileFocused) 1.5.dp else 1.dp,
+                            color = if (isMobileFocused) NeonCyanGlow else GlassBorderHighlight,
+                            shape = RoundedCornerShape(16.dp)
+                        )
+                        .padding(horizontal = 16.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Phone,
+                            contentDescription = "Mobile configuration node",
+                            tint = TextMutedBlue,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
                         Box(
                             modifier = Modifier
+                                .width(1.dp)
+                                .height(18.dp)
+                                .background(GlassBorderHighlight)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        TextField(
+                            value = mobileNumber,
+                            onValueChange = { input ->
+                                mobileNumber = input.filter { it.isDigit() || it == '+' }
+                            },
+                            placeholder = { Text("e.g. +923001234567 or 03001234567", color = TextMutedBlue, fontSize = 14.sp) },
+                            modifier = Modifier
                                 .fillMaxWidth()
-                                .height(56.dp)
-                                .scale(focusScale)
-                                .shadow(shadowDp, RoundedCornerShape(18.dp))
-                                .background(GlassSurfaceCore, RoundedCornerShape(18.dp))
-                                .border(
-                                    width = if (isEmailFocused) 1.5.dp else 1.dp,
-                                    color = if (isEmailFocused) NeonCyanGlow else GlassBorderHighlight,
-                                    shape = RoundedCornerShape(18.dp)
-                                )
-                                .padding(horizontal = 16.dp),
-                            contentAlignment = Alignment.CenterStart
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Email,
-                                    contentDescription = "Email icon",
-                                    tint = TextMutedBlue,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Box(
-                                    modifier = Modifier
-                                        .width(1.dp)
-                                        .height(18.dp)
-                                        .background(GlassBorderHighlight)
-                                )
-                                Spacer(modifier = Modifier.width(12.dp))
-                                TextField(
-                                    value = emailAddress,
-                                    onValueChange = { input ->
-                                        emailAddress = input.filter { !it.isWhitespace() }
-                                    },
-                                    placeholder = { Text("operator@gmail.com", color = TextMutedBlue, fontSize = 14.sp) },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .onFocusChanged { isEmailFocused = it.isFocused },
-                                    colors = TextFieldDefaults.colors(
-                                        focusedContainerColor = Color.Transparent,
-                                        unfocusedContainerColor = Color.Transparent,
-                                        disabledContainerColor = Color.Transparent,
-                                        focusedIndicatorColor = Color.Transparent,
-                                        unfocusedIndicatorColor = Color.Transparent,
-                                        focusedTextColor = TextIceWhite,
-                                        unfocusedTextColor = TextIceWhite
-                                    ),
-                                    keyboardOptions = KeyboardOptions(
-                                        keyboardType = KeyboardType.Email,
-                                        imeAction = ImeAction.Done
-                                    ),
-                                    singleLine = true
-                                )
-                            }
+                                .onFocusChanged { isMobileFocused = it.isFocused },
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                                disabledContainerColor = Color.Transparent,
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent,
+                                focusedTextColor = TextIceWhite,
+                                unfocusedTextColor = TextIceWhite
+                            ),
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Phone,
+                                imeAction = if (isSignUpMode) ImeAction.Next else ImeAction.Done
+                            ),
+                            singleLine = true
+                        )
+                    }
+                }
+
+                if (isSignUpMode) {
+                    Spacer(modifier = Modifier.height(18.dp))
+
+                    // 2. EMAIL INPUT (SignUp only)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "GMAIL OPERATOR NODE",
+                            color = if (isValidEmail) NeonActiveGreen else NeonCyanGlow,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.sp
+                        )
+                        if (emailAddress.isNotEmpty() && !isValidEmail) {
+                            Text(
+                                text = "Format: ...@domain.com",
+                                color = Color.Red.copy(alpha = 0.8f),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
                         }
                     }
-                } else {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Text(
-                            text = "SECURITY KEY (OTP)",
-                            color = NeonActiveGreen,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.sp,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
 
-                        // 4 separate FocusRequesters & FocusStates
-                        val focusRequesters = remember { List(4) { FocusRequester() } }
-                        val focusStates = remember { mutableStateListOf(false, false, false, false) }
-                        
-                        // Breathing dynamic neon cyan alpha glow
-                        val infiniteTransition = rememberInfiniteTransition(label = "BreathingCyanGlow")
-                        val breathingAlpha by infiniteTransition.animateFloat(
-                            initialValue = 0.4f,
-                            targetValue = 1.0f,
-                            animationSpec = infiniteRepeatable(
-                                animation = tween(1200, easing = FastOutSlowInEasing),
-                                repeatMode = RepeatMode.Reverse
-                            ),
-                            label = "GlowAlpha"
-                        )
+                    Spacer(modifier = Modifier.height(8.dp))
 
+                    val emailFocusScale by animateFloatAsState(
+                        if (isEmailFocused) 1.03f else 1f, 
+                        spring(dampingRatio = Spring.DampingRatioHighBouncy)
+                    )
+                    val emailShadowDp by animateDpAsState(if (isEmailFocused) 12.dp else 4.dp)
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(54.dp)
+                            .scale(emailFocusScale)
+                            .shadow(emailShadowDp, RoundedCornerShape(16.dp))
+                            .background(GlassSurfaceCore, RoundedCornerShape(16.dp))
+                            .border(
+                                width = if (isEmailFocused) 1.5.dp else 1.dp,
+                                color = if (isEmailFocused) NeonCyanGlow else GlassBorderHighlight,
+                                shape = RoundedCornerShape(16.dp)
+                            )
+                            .padding(horizontal = 16.dp),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceEvenly,
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            for (i in 0 until 4) {
-                                val otpVal = otpStates[i].value
-                                val isFocused = focusStates[i]
-
-                                val boxScale by animateFloatAsState(
-                                    targetValue = if (isFocused) 1.08f else 1.0f,
-                                    animationSpec = spring(
-                                        dampingRatio = Spring.DampingRatioHighBouncy,
-                                        stiffness = Spring.StiffnessMedium
-                                    ),
-                                    label = "BoxScale_$i"
-                                )
-                                val boxShadowDp by animateDpAsState(
-                                    targetValue = if (isFocused) 16.dp else 4.dp,
-                                    label = "BoxShadow_$i"
-                                )
-
-                                val borderGlowColor = if (isFocused) {
-                                    NeonCyanGlow.copy(alpha = breathingAlpha)
-                                } else {
-                                    GlassBorderHighlight
-                                }
-                                val borderWidth = if (isFocused) 1.8.dp else 1.dp
-
-                                Box(
-                                    modifier = Modifier
-                                        .size(60.dp)
-                                        .scale(boxScale)
-                                        .shadow(boxShadowDp, RoundedCornerShape(16.dp), ambientColor = NeonCyanGlow, spotColor = NeonCyanGlow)
-                                        .background(GlassSurfaceCore, RoundedCornerShape(16.dp))
-                                        .border(
-                                            width = borderWidth,
-                                            color = borderGlowColor,
-                                            shape = RoundedCornerShape(16.dp)
-                                        )
-                                        .clickable {
-                                            focusRequesters[i].requestFocus()
-                                        },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    BasicTextField(
-                                        value = otpVal,
-                                        onValueChange = { newVal ->
-                                            val text = newVal.text
-                                            if (text.all { it.isDigit() }) {
-                                                if (text.length <= 1) {
-                                                    otpStates[i].value = newVal
-                                                    if (text.isNotEmpty() && i < 3) {
-                                                        focusRequesters[i + 1].requestFocus()
-                                                    }
-                                                } else {
-                                                    val lastChar = text.last().toString()
-                                                    otpStates[i].value = TextFieldValue(lastChar, TextRange(lastChar.length))
-                                                    if (i < 3) {
-                                                        focusRequesters[i + 1].requestFocus()
-                                                    }
-                                                }
-                                            }
-                                        },
-                                        modifier = Modifier
-                                            .focusRequester(focusRequesters[i])
-                                            .onFocusChanged { focusStates[i] = it.isFocused }
-                                            .onKeyEvent { keyEvent ->
-                                                if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.Backspace) {
-                                                    if (otpStates[i].value.text.isEmpty() && i > 0) {
-                                                        otpStates[i - 1].value = TextFieldValue("")
-                                                        focusRequesters[i - 1].requestFocus()
-                                                        true
-                                                    } else {
-                                                        false
-                                                    }
-                                                } else {
-                                                    false
-                                                }
-                                            }
-                                            .width(40.dp)
-                                            .align(Alignment.Center),
-                                        textStyle = LocalTextStyle.current.copy(
-                                            color = NeonActiveGreen,
-                                            fontSize = 24.sp,
-                                            fontWeight = FontWeight.Black,
-                                            textAlign = TextAlign.Center,
-                                            fontFamily = FontFamily.Monospace
-                                        ),
-                                        keyboardOptions = KeyboardOptions(
-                                            keyboardType = KeyboardType.Number,
-                                            imeAction = if (i == 3) ImeAction.Done else ImeAction.Next
-                                        ),
-                                        keyboardActions = KeyboardActions(
-                                            onNext = { if (i < 3) focusRequesters[i + 1].requestFocus() }
-                                        ),
-                                        singleLine = true,
-                                        cursorBrush = SolidColor(NeonCyanGlow)
-                                    )
-                                }
-                            }
+                            Icon(
+                                imageVector = Icons.Default.Email,
+                                contentDescription = "Email node configuration",
+                                tint = TextMutedBlue,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Box(
+                                modifier = Modifier
+                                    .width(1.dp)
+                                    .height(18.dp)
+                                    .background(GlassBorderHighlight)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            TextField(
+                                value = emailAddress,
+                                onValueChange = { input ->
+                                    emailAddress = input.filter { !it.isWhitespace() }
+                                },
+                                placeholder = { Text("operator@gmail.com", color = TextMutedBlue, fontSize = 14.sp) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .onFocusChanged { isEmailFocused = it.isFocused },
+                                colors = TextFieldDefaults.colors(
+                                    focusedContainerColor = Color.Transparent,
+                                    unfocusedContainerColor = Color.Transparent,
+                                    disabledContainerColor = Color.Transparent,
+                                    focusedIndicatorColor = Color.Transparent,
+                                    unfocusedIndicatorColor = Color.Transparent,
+                                    focusedTextColor = TextIceWhite,
+                                    unfocusedTextColor = TextIceWhite
+                                ),
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Email,
+                                    imeAction = ImeAction.Next
+                                ),
+                                singleLine = true
+                            )
                         }
-                        
-                        // Automatically focus the first box when the segment transitions or becomes visible
-                        LaunchedEffect(isOtpSent) {
-                            if (isOtpSent) {
-                                delay(300)
-                                focusRequesters[0].requestFocus()
-                            }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(18.dp))
+
+                // 3. PASSWORD INPUT
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "CRYPTOGRAPHIC PASSKEY",
+                        color = if (isValidPassword) NeonActiveGreen else NeonCyanGlow,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    )
+                    if (password.isNotEmpty() && !isValidPassword) {
+                        Text(
+                            text = "Must be >= 6 chars",
+                            color = Color.Red.copy(alpha = 0.8f),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                val passwordFocusScale by animateFloatAsState(
+                    if (isPasswordFocused) 1.03f else 1f, 
+                    spring(dampingRatio = Spring.DampingRatioHighBouncy)
+                )
+                val passwordShadowDp by animateDpAsState(if (isPasswordFocused) 12.dp else 4.dp)
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(54.dp)
+                        .scale(passwordFocusScale)
+                        .shadow(passwordShadowDp, RoundedCornerShape(16.dp))
+                        .background(GlassSurfaceCore, RoundedCornerShape(16.dp))
+                        .border(
+                            width = if (isPasswordFocused) 1.5.dp else 1.dp,
+                            color = if (isPasswordFocused) NeonCyanGlow else GlassBorderHighlight,
+                            shape = RoundedCornerShape(16.dp)
+                        )
+                        .padding(horizontal = 16.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = "Secure passkey input",
+                            tint = TextMutedBlue,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Box(
+                            modifier = Modifier
+                                .width(1.dp)
+                                .height(18.dp)
+                                .background(GlassBorderHighlight)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        TextField(
+                            value = password,
+                            onValueChange = { input ->
+                                password = input
+                            },
+                            placeholder = { Text("••••••••", color = TextMutedBlue, fontSize = 14.sp) },
+                            visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                            modifier = Modifier
+                                .weight(1f)
+                                .onFocusChanged { isPasswordFocused = it.isFocused },
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                                disabledContainerColor = Color.Transparent,
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent,
+                                focusedTextColor = TextIceWhite,
+                                unfocusedTextColor = TextIceWhite
+                            ),
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Password,
+                                imeAction = ImeAction.Done
+                            ),
+                            singleLine = true
+                        )
+                        Box(
+                            modifier = Modifier
+                                .clickable { passwordVisible = !passwordVisible }
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                text = if (passwordVisible) "HIDE" else "SHOW",
+                                color = NeonActiveGreen,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Black,
+                                fontFamily = FontFamily.Monospace
+                            )
                         }
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(26.dp))
 
-            // Premium NEXT Validation action key
+            // ACTION BUTTON
             var isNextPressed by remember { mutableStateOf(false) }
             val nextScale by animateFloatAsState(
-                targetValue = if (isNextPressed) 0.90f else 1.0f,
+                targetValue = if (isNextPressed) 0.92f else 1.0f,
                 animationSpec = spring(dampingRatio = Spring.DampingRatioHighBouncy),
                 label = "NextButtonScale"
             )
-            val isButtonEnabled = if (!isOtpSent) isValidEmail else otpCode.length == 4
 
-            val buttonBackground = if (isButtonEnabled) {
+            val buttonBackground = if (isFormValid) {
                 Brush.horizontalGradient(listOf(NeonCyanGlow, Color(0xFF007A9B)))
             } else {
                 Brush.horizontalGradient(listOf(Color(0xFF1E2235), Color(0xFF161925)))
@@ -920,29 +1107,50 @@ fun LoginScreen(onLoginSuccess: (String) -> Unit) {
                     .fillMaxWidth()
                     .height(54.dp)
                     .scale(nextScale)
-                    .shadow(if (isButtonEnabled) 14.dp else 2.dp, RoundedCornerShape(18.dp), ambientColor = NeonCyanGlow, spotColor = NeonCyanGlow)
+                    .shadow(
+                        if (isFormValid) 14.dp else 2.dp, 
+                        RoundedCornerShape(18.dp), 
+                        ambientColor = NeonCyanGlow, 
+                        spotColor = NeonCyanGlow
+                    )
                     .background(buttonBackground, RoundedCornerShape(18.dp))
-                    .border(1.dp, if (isButtonEnabled) NeonCyanGlow.copy(alpha = 0.5f) else Color.Transparent, RoundedCornerShape(18.dp))
-                    .clickable(enabled = isButtonEnabled) {
+                    .border(
+                        1.dp, 
+                        if (isFormValid) NeonCyanGlow.copy(alpha = 0.5f) else Color.Transparent, 
+                        RoundedCornerShape(18.dp)
+                    )
+                    .clickable(enabled = isFormValid && !isProceeding) {
                         isNextPressed = true
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         coroutineScope.launch {
-                            delay(150)
+                            delay(120)
                             isNextPressed = false
-                            if (!isOtpSent) {
-                                isProceeding = true
-                                firebaseStatusText = "Connecting Firebase Auth Link pipeline..."
-                                delay(1200)
-                                isProceeding = false
-                                firebaseStatusText = "Security key signature dispatched to Gmail!"
-                                isOtpSent = true
+                            
+                            if (isSignUpMode) {
+                                viewModel.signUp(
+                                    mobileNumber = mobileNumber.trim(),
+                                    email = emailAddress.trim(),
+                                    pass = password,
+                                    onSuccess = { resolvedEmail ->
+                                        Toast.makeText(context, "Welcome to Air Chat!", Toast.LENGTH_SHORT).show()
+                                        onLoginSuccess(resolvedEmail)
+                                    },
+                                    onFailure = { errorMsg ->
+                                        Toast.makeText(context, "Provision FAILED: $errorMsg", Toast.LENGTH_LONG).show()
+                                    }
+                                )
                             } else {
-                                isProceeding = true
-                                firebaseStatusText = "Validating cryptographic terminal OTP..."
-                                delay(1200)
-                                isProceeding = false
-                                firebaseStatusText = "Tunnel link verified!"
-                                onLoginSuccess(emailAddress)
+                                viewModel.loginWithMobile(
+                                    mobileNumber = mobileNumber.trim(),
+                                    pass = password,
+                                    onSuccess = { resolvedEmail ->
+                                        Toast.makeText(context, "Uplink verified!", Toast.LENGTH_SHORT).show()
+                                        onLoginSuccess(resolvedEmail)
+                                    },
+                                    onFailure = { errorMsg ->
+                                        Toast.makeText(context, "Authorization ERROR: $errorMsg", Toast.LENGTH_LONG).show()
+                                    }
+                                )
                             }
                         }
                     },
@@ -952,88 +1160,62 @@ fun LoginScreen(onLoginSuccess: (String) -> Unit) {
                     CircularProgressIndicator(color = NeonActiveGreen, modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
                 } else {
                     Text(
-                        text = if (!isOtpSent) "DISPATCH DECRYPT KEY" else "ESTABLISH SECURE LINK",
-                        color = if (isButtonEnabled) Color.White else TextMutedBlue,
+                        text = if (isSignUpMode) "PROVISION PRIVATE NODE" else "ESTABLISH SECURE UPLINK",
+                        color = if (isFormValid) Color.White else TextMutedBlue,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.sp
+                        letterSpacing = 1.2.sp
                     )
                 }
             }
 
+            // Status feedback message unit
             if (firebaseStatusText.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(14.dp))
                 Text(
                     text = firebaseStatusText,
-                    color = if (firebaseStatusText.contains("dispatched") || firebaseStatusText.contains("verified")) NeonActiveGreen else NeonCyanGlow,
+                    color = if (isErrorState) Color.Red.copy(0.9f) else if (firebaseStatusText.contains("successfully") || firebaseStatusText.contains("authorized") || firebaseStatusText.contains("complete!")) NeonActiveGreen else NeonCyanGlow,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Monospace,
-                    letterSpacing = 0.5.sp
+                    letterSpacing = 0.5.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 12.dp)
                 )
             }
 
-            // --- ACTIVE 1:30 RESEND COUNTDOWN TIMER ---
-            if (isOtpSent) {
-                Spacer(modifier = Modifier.height(20.dp))
-                
-                var timerSeconds by rememberSaveable { mutableStateOf(90) } // 1:30 Minute Countdown
-                val timerActive = timerSeconds > 0
+            Spacer(modifier = Modifier.height(28.dp))
 
-                LaunchedEffect(isOtpSent) {
-                    if (isOtpSent) {
-                        while (timerSeconds > 0) {
-                            delay(1000)
-                            timerSeconds--
+            // SIGN UP MODE SWITCH TOGGLER
+            var isTogglePressed by remember { mutableStateOf(false) }
+            val toggleScale by animateFloatAsState(if (isTogglePressed) 0.95f else 1f)
+
+            Box(
+                modifier = Modifier
+                    .scale(toggleScale)
+                    .clickable {
+                        isTogglePressed = true
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        coroutineScope.launch {
+                            delay(100)
+                            isTogglePressed = false
+                            isSignUpMode = !isSignUpMode
                         }
                     }
-                }
-
-                AnimatedContent(
-                    targetState = timerActive,
-                    transitionSpec = {
-                        fadeIn(animationSpec = tween(500)) togetherWith fadeOut(animationSpec = tween(300))
-                    },
-                    label = "TimerTextFade"
-                ) { active ->
-                    if (active) {
-                        val mins = timerSeconds / 60
-                        val secs = timerSeconds % 60
-                        val timerString = String.format("%02d:%02d", mins, secs)
-
-                        Text(
-                            text = "Resend cryptographic key in $timerString",
-                            color = TextMutedBlue,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                    } else {
-                        var isResendPressed by remember { mutableStateOf(false) }
-                        val resendScale by animateFloatAsState(if (isResendPressed) 0.92f else 1f)
-                        
-                        Text(
-                            text = "RESEND TRANSCIEVER KEY",
-                            color = NeonActiveGreen,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.8.sp,
-                            modifier = Modifier
-                                .scale(resendScale)
-                                .border(1.dp, NeonActiveGreen.copy(0.3f), RoundedCornerShape(8.dp))
-                                .clickable {
-                                    isResendPressed = true
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    coroutineScope.launch {
-                                        delay(100)
-                                        isResendPressed = false
-                                        timerSeconds = 90 // Reset counting back to 1:30
-                                        otpStates.forEach { it.value = TextFieldValue("") }
-                                    }
-                                }
-                                .padding(horizontal = 14.dp, vertical = 6.dp)
-                        )
-                    }
-                }
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = if (isSignUpMode) 
+                        "Existing node? AUTHORIZE CONNECTION" 
+                    else 
+                        "Need terminal key? PROVISION PRIVATE NODE",
+                    color = NeonActiveGreen,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 0.8.sp,
+                    fontFamily = FontFamily.Monospace
+                )
             }
         }
     }
@@ -1045,6 +1227,7 @@ fun LoginScreen(onLoginSuccess: (String) -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
+    currentUserId: String = "user_me",
     contacts: List<ContactData>,
     onContactClicked: (ContactData) -> Unit,
     isContactPickerOpen: Boolean,
@@ -1109,7 +1292,7 @@ fun DashboardScreen(
                         }
                         Column {
                             Text(
-                                text = "Holographic Node",
+                                text = "AR CHAT Node",
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = TextIceWhite
@@ -1317,10 +1500,33 @@ fun DashboardScreen(
         // Elasticsearch Contact & Group Launcher Modal Dialog Wrapper
         AnimatedVisibility(
             visible = isContactPickerOpen,
-            enter = fadeIn() + scaleIn(animationSpec = spring(dampingRatio = Spring.DampingRatioHighBouncy)),
-            exit = fadeOut() + scaleOut()
+            enter = fadeIn(
+                animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
+            ) + scaleIn(
+                initialScale = 0.82f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            ) + slideInVertically(
+                initialOffsetY = { 60 },
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            ),
+            exit = fadeOut(
+                animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
+            ) + scaleOut(
+                targetScale = 0.82f,
+                animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
+            ) + slideOutVertically(
+                targetOffsetY = { 60 },
+                animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
+            )
         ) {
             ContactPickerModal(
+                currentUserId = currentUserId,
                 onDismiss = onTogglePicker,
                 onSelectContact = { contact ->
                     onStartNewChat(contact)
@@ -1373,9 +1579,15 @@ fun HolographicQRCodeIcon(modifier: Modifier = Modifier) {
     }
 }
 
+fun getDeterministicChatId(userId1: String, userId2: String): String {
+    val sorted = listOf(userId1, userId2).sorted()
+    return "${sorted[0]}_${sorted[1]}"
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ContactPickerModal(
+    currentUserId: String = "user_me",
     onDismiss: () -> Unit,
     onSelectContact: (ContactData) -> Unit,
     onGroupCreated: (String, List<String>) -> Unit
@@ -1862,8 +2074,9 @@ fun ContactPickerModal(
                                     isStartChatPressed = true
                                     hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
                                     
+                                    val deterministicChatId = getDeterministicChatId(currentUserId, phoneInputVal)
                                     val newlyCreatedContact = ContactData(
-                                        id = "custom_contact_${System.currentTimeMillis()}",
+                                        id = deterministicChatId,
                                         name = fullNameInput.trim(),
                                         avatarUrl = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=100&h=100&q=80",
                                         isOnline = true,
@@ -1871,7 +2084,8 @@ fun ContactPickerModal(
                                         lastMessageTime = "Just now",
                                         unreadCount = 0,
                                         isOfficial = false,
-                                        isGroup = false
+                                        isGroup = false,
+                                        members = listOf(currentUserId, phoneInputVal)
                                     )
                                     
                                     onSelectContact(newlyCreatedContact)
@@ -1996,6 +2210,26 @@ fun ConversationRow(
 // ────────────────────────────────────────────────────────
 // 4. ACTIVE INNER CHAT ROOM (INCLUDES MESSAGE ENGINE)
 // ────────────────────────────────────────────────────────
+@Composable
+fun TypingDot(delayMillis: Int) {
+    val infiniteTransition = rememberInfiniteTransition(label = "dot")
+    val alpha by infiniteTransition.animateFloat(
+        initialValue = 0.2f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(600, delayMillis = delayMillis, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "alpha"
+    )
+    Box(
+        modifier = Modifier
+            .size(6.dp)
+            .clip(CircleShape)
+            .background(NeonCyanGlow.copy(alpha = alpha))
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatRoomScreen(
@@ -2003,17 +2237,227 @@ fun ChatRoomScreen(
     messagesList: List<LocalMessage>,
     currentUserId: String,
     onBackPressed: () -> Unit,
-    onSendMessage: (String) -> Unit
+    onSendMessage: (String, String) -> Unit
 ) {
     var inputText by remember { mutableStateOf(TextFieldValue("")) }
     var isMessageFocused by remember { mutableStateOf(false) }
     
+    val context = LocalContext.current
+    val speechRecognizerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val data = result.data
+            val results = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            if (!results.isNullOrEmpty()) {
+                val spokenText = results[0]
+                val currentText = inputText.text
+                val spacePrefix = if (currentText.isEmpty() || currentText.endsWith(" ")) "" else " "
+                val newText = currentText + spacePrefix + spokenText
+                inputText = TextFieldValue(
+                    text = newText,
+                    selection = TextRange(newText.length)
+                )
+            }
+        }
+    }
+    
+    var contactOnlineState by remember(contact.id) { mutableStateOf(contact.isOnline) }
+    var typingUsers by remember(contact.id) { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
+    val isOtherUserTyping = typingUsers.values.any { it }
+
+    LaunchedEffect(inputText.text) {
+        if (currentUserId.isNotEmpty() && currentUserId != "user_me") {
+            try {
+                val typingRef = FirebaseDatabase.getInstance("https://my-chat-5a268-default-rtdb.firebaseio.com/")
+                    .getReference("chats")
+                    .child(contact.id)
+                    .child("typing")
+                    .child(currentUserId)
+                if (inputText.text.isNotEmpty()) {
+                    typingRef.setValue(true)
+                    delay(3000)
+                    typingRef.setValue(false)
+                } else {
+                    typingRef.setValue(false)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    DisposableEffect(contact.id, currentUserId) {
+        var statusRef: com.google.firebase.database.DatabaseReference? = null
+        var typingRef: com.google.firebase.database.DatabaseReference? = null
+        var statusListener: com.google.firebase.database.ValueEventListener? = null
+        var typingListener: com.google.firebase.database.ValueEventListener? = null
+        
+        try {
+            val database = FirebaseDatabase.getInstance("https://my-chat-5a268-default-rtdb.firebaseio.com/")
+            
+            // 1. Status/presence listener
+            statusRef = database.getReference("status").child(contact.id).child("isOnline")
+            statusListener = object : com.google.firebase.database.ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    contactOnlineState = snapshot.getValue(Boolean::class.java) ?: false
+                }
+                override fun onCancelled(error: DatabaseError) {}
+            }
+            statusRef.addValueEventListener(statusListener)
+
+            // 2. Typing listener
+            typingRef = database.getReference("chats").child(contact.id).child("typing")
+            typingListener = object : com.google.firebase.database.ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    val map = mutableMapOf<String, Boolean>()
+                    for (childSnapshot in snapshot.children) {
+                        val uid = childSnapshot.key
+                        val typing = childSnapshot.getValue(Boolean::class.java) ?: false
+                        if (uid != null && uid != currentUserId) {
+                            map[uid] = typing
+                        }
+                    }
+                    typingUsers = map
+                }
+                override fun onCancelled(error: DatabaseError) {}
+            }
+            typingRef.addValueEventListener(typingListener)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        onDispose {
+            try {
+                if (statusRef != null && statusListener != null) statusRef.removeEventListener(statusListener)
+                if (typingRef != null && typingListener != null) typingRef.removeEventListener(typingListener)
+                if (currentUserId.isNotEmpty() && currentUserId != "user_me" && typingRef != null) {
+                    typingRef.child(currentUserId).setValue(false)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+    
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
-    LaunchedEffect(messagesList.size) {
-        if (messagesList.isNotEmpty()) {
-            listState.animateScrollToItem(messagesList.size - 1)
+    var isUploadingImage by remember { mutableStateOf(false) }
+    var uploadProgress by remember { mutableStateOf("") }
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            isUploadingImage = true
+            uploadProgress = "Processing image..."
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val inputStream = context.contentResolver.openInputStream(uri)
+                    val bytes = inputStream?.readBytes()
+                    inputStream?.close()
+                    if (bytes != null) {
+                        val originalBitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        if (originalBitmap != null) {
+                            val maxDimension = 480
+                            val width = originalBitmap.width
+                            val height = originalBitmap.height
+                            val scaledBitmap = if (width > maxDimension || height > maxDimension) {
+                                val ratio = width.toFloat() / height.toFloat()
+                                val (newWidth, newHeight) = if (ratio > 1) {
+                                    Pair(maxDimension, (maxDimension / ratio).toInt())
+                                } else {
+                                    Pair((maxDimension * ratio).toInt(), maxDimension)
+                                }
+                                Bitmap.createScaledBitmap(originalBitmap, newWidth, newHeight, true)
+                            } else {
+                                originalBitmap
+                            }
+                            
+                            val outputStream = java.io.ByteArrayOutputStream()
+                            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 75, outputStream)
+                            val compressedBytes = outputStream.toByteArray()
+                            val base64String = "data:image/jpeg;base64," + android.util.Base64.encodeToString(compressedBytes, android.util.Base64.NO_WRAP)
+                            
+                            withContext(Dispatchers.Main) {
+                                isUploadingImage = false
+                                uploadProgress = ""
+                                onSendMessage(inputText.text, base64String)
+                                inputText = TextFieldValue("")
+                            }
+                        } else {
+                            withContext(Dispatchers.Main) {
+                                isUploadingImage = false
+                                uploadProgress = ""
+                                Toast.makeText(context, "Failed to parse image bytes", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    } else {
+                        withContext(Dispatchers.Main) {
+                            isUploadingImage = false
+                            uploadProgress = ""
+                            Toast.makeText(context, "Failed to read image", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    withContext(Dispatchers.Main) {
+                        isUploadingImage = false
+                        uploadProgress = ""
+                        Toast.makeText(context, "Error: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+    }
+
+    var activeMessages by remember(contact.id) { mutableStateOf(messagesList) }
+
+    LaunchedEffect(messagesList) {
+        activeMessages = (activeMessages + messagesList).distinctBy { it.id }.sortedBy { it.timestamp }
+    }
+
+    DisposableEffect(contact.id) {
+        var messagesRef: com.google.firebase.database.DatabaseReference? = null
+        var listener: com.google.firebase.database.ValueEventListener? = null
+        try {
+            messagesRef = FirebaseDatabase.getInstance("https://my-chat-5a268-default-rtdb.firebaseio.com/").getReference("chats")
+                .child(contact.id).child("messages")
+            listener = object : com.google.firebase.database.ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    val list = mutableListOf<LocalMessage>()
+                    for (childSnapshot in snapshot.children) {
+                        val msg = childSnapshot.getValue(LocalMessage::class.java)
+                        if (msg != null) {
+                            list.add(msg)
+                        }
+                    }
+                    activeMessages = list
+                }
+
+                override fun onCancelled(error: DatabaseError) {
+                    // Ignore or handle
+                }
+            }
+            messagesRef.addValueEventListener(listener)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        onDispose {
+            try {
+                if (messagesRef != null && listener != null) {
+                    messagesRef.removeEventListener(listener)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    LaunchedEffect(activeMessages.size, activeMessages.lastOrNull()?.id) {
+        if (activeMessages.isNotEmpty()) {
+            listState.animateScrollToItem(activeMessages.size - 1)
         }
     }
 
@@ -2049,16 +2493,25 @@ fun ChatRoomScreen(
                         }
 
                         Column {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Text(text = contact.name, fontSize = 16.sp, fontWeight = FontWeight.Black, color = TextIceWhite, letterSpacing = (-0.2).sp)
                                 if (contact.isOfficial) {
                                     Icon(imageVector = Icons.Default.CheckCircle, contentDescription = "Verif badge", tint = NeonCyanGlow, modifier = Modifier.size(13.dp))
                                 }
+                                if (contactOnlineState) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(NeonActiveGreen)
+                                            .border(1.dp, Color.White.copy(alpha = 0.5f), CircleShape)
+                                    )
+                                }
                             }
                             Text(
-                                text = if (contact.isOnline) "ONLINE ENCRYPTED" else "OFFLINE TIMEOUT",
+                                text = if (contactOnlineState) "ONLINE ENCRYPTED" else "OFFLINE TIMEOUT",
                                 fontSize = 9.sp,
-                                color = if (contact.isOnline) NeonActiveGreen else TextMutedBlue,
+                                color = if (contactOnlineState) NeonActiveGreen else TextMutedBlue,
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 0.5.sp
                             )
@@ -2113,7 +2566,7 @@ fun ChatRoomScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 contentPadding = PaddingValues(top = 16.dp, bottom = 12.dp)
             ) {
-                itemsIndexed(messagesList) { _, message ->
+                itemsIndexed(activeMessages) { _, message ->
                     val isMe = message.senderId == currentUserId
                     Animated3DBubbleWrapper(message = message, isMe = isMe)
                 }
@@ -2129,6 +2582,67 @@ fun ChatRoomScreen(
                     .navigationBarsPadding()
                     .imePadding()
             ) {
+                if (isOtherUserTyping) {
+                    Row(
+                        modifier = Modifier
+                            .padding(bottom = 6.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(GlassSurfaceCore.copy(alpha = 0.5f))
+                            .border(1.dp, GlassBorderHighlight.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TypingDot(delayMillis = 0)
+                            TypingDot(delayMillis = 200)
+                            TypingDot(delayMillis = 400)
+                        }
+                        Text(
+                            text = "${contact.name} is typing...",
+                            color = TextIceWhite.copy(alpha = 0.9f),
+                            fontSize = 11.sp,
+                            fontStyle = FontStyle.Italic,
+                            fontWeight = FontWeight.SemiBold,
+                            fontFamily = FontFamily.Monospace,
+                            letterSpacing = 0.2.sp
+                        )
+                    }
+                }
+
+                if (isUploadingImage && uploadProgress.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 6.dp)
+                            .background(GlassSurfaceCore, RoundedCornerShape(8.dp))
+                            .border(1.dp, NeonCyanGlow.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(12.dp),
+                                color = NeonCyanGlow,
+                                strokeWidth = 1.5.dp
+                            )
+                            Text(
+                                text = uploadProgress,
+                                color = TextIceWhite,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                }
+
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2147,6 +2661,22 @@ fun ChatRoomScreen(
                             .padding(horizontal = 12.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        IconButton(
+                            onClick = {
+                                if (!isUploadingImage) {
+                                    imagePickerLauncher.launch("image/*")
+                                }
+                            },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = "Attach image",
+                                tint = NeonCyanGlow,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+
                         TextField(
                             value = inputText,
                             onValueChange = { inputText = it },
@@ -2167,12 +2697,46 @@ fun ChatRoomScreen(
                             keyboardActions = KeyboardActions(
                                 onSend = {
                                     if (inputText.text.isNotBlank()) {
-                                        onSendMessage(inputText.text)
+                                        onSendMessage(inputText.text, "")
                                         inputText = TextFieldValue("")
                                     }
                                 }
                             )
                         )
+
+                        var isMicPressed by remember { mutableStateOf(false) }
+                        val micScale by animateFloatAsState(if (isMicPressed) 0.82f else 1f, label = "micScale")
+
+                        IconButton(
+                            onClick = {
+                                isMicPressed = true
+                                scope.launch {
+                                    delay(100)
+                                    isMicPressed = false
+                                }
+                                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                                    putExtra(RecognizerIntent.EXTRA_PROMPT, "Transmit vocal telemetry...")
+                                }
+                                try {
+                                    speechRecognizerLauncher.launch(intent)
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "Voice synthesis engine unavailable on this node", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            modifier = Modifier
+                                .size(36.dp)
+                                .scale(micScale)
+                                .padding(end = 4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Mic,
+                                contentDescription = "Voice input transcription",
+                                tint = NeonCyanGlow,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
 
                         var isSendTapped by remember { mutableStateOf(false) }
                         val sendScale by animateFloatAsState(if (isSendTapped) 0.85f else 1f)
@@ -2185,7 +2749,7 @@ fun ChatRoomScreen(
                                 .clickable {
                                     if (inputText.text.isNotBlank()) {
                                         isSendTapped = true
-                                        onSendMessage(inputText.text)
+                                        onSendMessage(inputText.text, "")
                                         inputText = TextFieldValue("")
                                         scope.launch {
                                             delay(100)
@@ -2212,8 +2776,40 @@ fun Animated3DBubbleWrapper(message: LocalMessage, isMe: Boolean) {
     }
     AnimatedVisibility(
         visible = isAppeared,
-        enter = fadeIn() + slideInHorizontally { if (isMe) it else -it },
-        exit = fadeOut()
+        enter = fadeIn(
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioLowBouncy,
+                stiffness = Spring.StiffnessMedium
+            )
+        ) + slideInHorizontally(
+            initialOffsetX = { if (isMe) it / 3 else -it / 3 },
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMediumLow
+            )
+        ) + slideInVertically(
+            initialOffsetY = { 25 },
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMediumLow
+            )
+        ) + scaleIn(
+            initialScale = 0.88f,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMediumLow
+            )
+        ),
+        exit = fadeOut(
+            animationSpec = spring(
+                stiffness = Spring.StiffnessMedium
+            )
+        ) + scaleOut(
+            targetScale = 0.88f,
+            animationSpec = spring(
+                stiffness = Spring.StiffnessMedium
+            )
+        )
     ) {
         Animated3DBubble(message = message, isMe = isMe)
     }
@@ -2251,7 +2847,41 @@ fun Animated3DBubble(message: LocalMessage, isMe: Boolean) {
                 .clickable { isTapped = true }
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
-            Text(text = message.messageText, color = TextIceWhite, fontSize = 14.sp, lineHeight = 20.sp)
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (!message.imageUrl.isNullOrEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 240.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color.Black.copy(alpha = 0.3f))
+                    ) {
+                        val base64ImageModel = remember(message.imageUrl) {
+                            val uri = message.imageUrl
+                            if (uri != null && (uri.startsWith("data:image/") || uri.contains(";base64,"))) {
+                                try {
+                                    val base64Data = if (uri.contains(",")) uri.substringAfter(",") else uri
+                                    val decodedBytes = android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT)
+                                    BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+                                } catch (e: Exception) {
+                                    uri
+                                }
+                            } else {
+                                uri
+                            }
+                        }
+                        AsyncImage(
+                            model = base64ImageModel,
+                            contentDescription = "Image attachment",
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp),
+                            contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                        )
+                    }
+                }
+                if (message.messageText.isNotBlank()) {
+                    Text(text = message.messageText, color = TextIceWhite, fontSize = 14.sp, lineHeight = 20.sp)
+                }
+            }
         }
     }
 }
@@ -2262,9 +2892,61 @@ fun Animated3DBubble(message: LocalMessage, isMe: Boolean) {
 @Composable
 fun ProfileSettingsTray(
     userEmail: String,
+    activeUserId: String,
     onDismiss: () -> Unit,
     onLogout: () -> Unit
 ) {
+    var displayName by remember { mutableStateOf("Authorized Operator") }
+    var tempDisplayName by remember { mutableStateOf("") }
+    var isSaving by remember { mutableStateOf(false) }
+    var saveStatus by remember { mutableStateOf("") }
+    
+    val coroutineScope = rememberCoroutineScope()
+    val dbAddress = "https://my-chat-5a268-default-rtdb.firebaseio.com/"
+
+    // Fetch existing display name
+    LaunchedEffect(activeUserId) {
+        if (activeUserId.isNotEmpty()) {
+            FirebaseDatabase.getInstance(dbAddress)
+                .getReference("users")
+                .child("profiles")
+                .child(activeUserId)
+                .child("displayName")
+                .get()
+                .addOnSuccessListener { snapshot ->
+                    val value = snapshot.getValue(String::class.java)
+                    if (!value.isNullOrBlank()) {
+                        displayName = value
+                        tempDisplayName = value
+                    } else {
+                        tempDisplayName = "Authorized Operator"
+                    }
+                }
+        }
+    }
+
+    val onSaveProfile = {
+        if (tempDisplayName.isNotBlank()) {
+            isSaving = true
+            saveStatus = "Uploading profile node data..."
+            FirebaseDatabase.getInstance(dbAddress)
+                .getReference("users")
+                .child("profiles")
+                .child(activeUserId)
+                .child("displayName")
+                .setValue(tempDisplayName.trim())
+                .addOnCompleteListener { task ->
+                    isSaving = false
+                    if (task.isSuccessful) {
+                        displayName = tempDisplayName.trim()
+                        saveStatus = "Identity Node updated successfully!"
+                    } else {
+                        saveStatus = "Error: " + (task.exception?.localizedMessage ?: "Sync fail")
+                    }
+                }
+        }
+    }
+
     // Backdrop touch catcher
     Box(
         modifier = Modifier
@@ -2297,7 +2979,7 @@ fun ProfileSettingsTray(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "OPERATOR TERMINAL",
+                        text = "AIR CHAT TERMINAL",
                         color = NeonCyanGlow,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Black,
@@ -2335,10 +3017,11 @@ fun ProfileSettingsTray(
                     Spacer(modifier = Modifier.height(12.dp))
 
                     Text(
-                        text = "Authorized Operator",
+                        text = displayName,
                         color = Color.White,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
                     )
 
                     Spacer(modifier = Modifier.height(3.dp))
@@ -2347,11 +3030,137 @@ fun ProfileSettingsTray(
                         text = userEmail,
                         color = TextMutedBlue,
                         fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.Center
                     )
                 }
 
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // PROFILE CONFIGURATION SECTION
+                Text(
+                    text = "PROFILE CONFIGURATION",
+                    color = TextMutedBlue,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 1.sp
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                var isNameFocused by remember { mutableStateOf(false) }
+                val nameFocusScale by animateFloatAsState(if (isNameFocused) 1.02f else 1f, label = "nameFocusScale")
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp)
+                        .scale(nameFocusScale)
+                        .background(Color(0xFF131522), RoundedCornerShape(12.dp))
+                        .border(1.dp, if (isNameFocused) NeonCyanGlow else GlassBorderHighlight, RoundedCornerShape(12.dp))
+                        .padding(horizontal = 12.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Edit Display Name",
+                            tint = TextMutedBlue,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .width(1.dp)
+                                .height(16.dp)
+                                .background(GlassBorderHighlight)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        BasicTextField(
+                            value = tempDisplayName,
+                            onValueChange = { tempDisplayName = it },
+                            textStyle = androidx.compose.ui.text.TextStyle(
+                                color = TextIceWhite,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold
+                            ),
+                            cursorBrush = SolidColor(NeonCyanGlow),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .onFocusChanged { isNameFocused = it.isFocused },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                var isSyncPressed by remember { mutableStateOf(false) }
+                val syncScale by animateFloatAsState(if (isSyncPressed) 0.95f else 1f, label = "syncScale")
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp)
+                        .scale(syncScale)
+                        .background(if (tempDisplayName.isNotBlank() && !isSaving) NeonActiveGreen else Color(0xFF1D262F), RoundedCornerShape(12.dp))
+                        .border(1.dp, if (tempDisplayName.isNotBlank() && !isSaving) NeonActiveGreen else Color.Transparent, RoundedCornerShape(12.dp))
+                        .clickable(enabled = tempDisplayName.isNotBlank() && !isSaving) {
+                            isSyncPressed = true
+                            coroutineScope.launch {
+                                delay(100)
+                                isSyncPressed = false
+                                onSaveProfile()
+                            }
+                        },
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    if (isSaving) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color(0xFF0F111D), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "UPLINKING...",
+                            color = Color(0xFF0F111D),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = if (tempDisplayName.isNotBlank()) Color(0xFF0F111D) else TextMutedBlue,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "SYNCHRONIZE PROFILE NODE",
+                            color = if (tempDisplayName.isNotBlank()) Color(0xFF0F111D) else TextMutedBlue,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Black
+                        )
+                    }
+                }
+
+                if (saveStatus.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = saveStatus,
+                        color = if (saveStatus.contains("successfully")) NeonActiveGreen else NeonCyanGlow,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Center
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
 
                 // Diagnostic variables & calibration metrics
                 Text(
@@ -2416,7 +3225,7 @@ fun ProfileSettingsTray(
 
                 // Logout terminal standard action
                 var isLogoutPressed by remember { mutableStateOf(false) }
-                val scaleFactor by animateFloatAsState(if (isLogoutPressed) 0.94f else 1f)
+                val scaleFactor by animateFloatAsState(if (isLogoutPressed) 0.94f else 1f, label = "scaleFactor")
 
                 Row(
                     modifier = Modifier
